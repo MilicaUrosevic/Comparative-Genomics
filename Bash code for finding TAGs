@@ -1,0 +1,134 @@
+This file contains the pipeline used to analyse duplications and TAGs in Vigna radiata. 
+
+
+
+TABLE ORGANISATION:
+- makes a new document with takes protein name and length:
+
+awk '/^>/ {if (seq) print gene_id, length(seq); seq=""; gene_id=substr($1, 2); next;} {seq = seq $0;} END {if (seq) print gene_id, length(seq);}' \
+/Users/milicaurosevic/Desktop/CG/VignaRadiata/Vigna_radiata.Vradiata_ver6.pep.all.fa > gene_lengths.txt
+
+
+
+- extracts protein name, chromosome number, start position, end position:
+also filters scaffold: if the protein is scaffold - marks its chromosome, start and end position as 'unknown'
+
+awk -F'[ >:]' '/^>/ {protein_id=$2; chromosome=$6; start_pos=$7; end_pos=$8; if (index(tolower($0), "scaffold") > 0) {chromosome="unknown"; start_pos="unknown"; end_pos="unknown";} printf "%s\t%s\t%s\t%s\n", protein_id, chromosome, start_pos, end_pos}' /Users/milicaurosevic/Desktop/CG/VignaRadiata/Vigna_radiata.Vradiata_ver6.pep.all.fa > fasta_info.txt
+
+
+
+- connects 2 files:
+
+awk 'NR==FNR {lengths[$1]=$2; next} {print $0, (lengths[$1] ? lengths[$1] : "unknown")}' gene_lengths.txt fasta_info.txt > combined_output.txt
+
+
+
+- adds gene name in another column
+
+awk 'NR==FNR {vigna_dict[$1]=$2; next} {print $0, (vigna_dict[$1] ? vigna_dict[$1] : "unknown")}' Vigna_radiata_liste combined_output.txt > final_output.txt
+
+
+
+- creates the final file 
+columns organisation: qseqid, sseqid, pident, length, mismatch, gapopen, qstart, qend, sstart, send, evalue, bitscore, qlength, slength, qchromosome, qchstart, qchend, schromosome, schstart, schend
+
+awk 'NR==FNR {gene_info_6[$1]=$6; gene_info_5[$1]=$5; gene_info_2_3_4[$1]=$2"\t"$3"\t"$4; next} {gene1=$1; gene2=$2; print gene_info_6[gene1], gene_info_6[gene2], $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, gene_info_5[gene1], gene_info_5[gene2], gene_info_2_3_4[gene1], gene_info_2_3_4[gene2]}' final_output.txt Vigna_radiata_Blastp_longIsoforme > combined_result.txt
+
+
+
+- removes 'unknown' (previously name for scaffold)
+
+awk '!/unknown/' combined_result.txt > filtered_combined_result.txt
+
+
+
+FILTERINGS:
+1. if there are many alignments for the same pair of genes - keep only the ones with the highest bit score
+awk '{key = ($1 < $2) ? $1"_"$2 : $2"_"$1; if ($12 > max[key]) {max[key] = $12; line[key] = $0}} END {for (key in line) print line[key]}' filtered_combined_result.txt > noduplicates.txt
+
+
+2. low_stringency filrering
+awk '{q_start = $7; q_end = $8; s_start = $9; s_end = $10; q_length = $13; s_length = $15; query_coverage = ((q_end - q_start + 1) / q_length) * 100; subject_coverage = ((s_end - s_start + 1) / s_length) * 100; if ($3 > 30 && query_coverage > 30 && subject_coverage > 30) {print $0}}' noduplicates.txt > low_stringency.txt
+
+
+
+3. high_stringency filtering
+awk '{q_start = $7; q_end = $8; s_start = $9; s_end = $10; q_length = $13; s_length = $15; query_coverage = ((q_end - q_start + 1) / q_length) * 100; subject_coverage = ((s_end - s_start + 1) / s_length) * 100; if ($3 > 40 && query_coverage > 50 && subject_coverage > 50) {print $0}}' noduplicates.txt > high_stringency.txt
+
+
+
+4. prepare files for MCL: make a file that keeps gene names and bit score
+awk '{print $1 "\t" $2 "\t" $12}' low_stringency.txt > low_stringency_MCL.txt
+awk '{print $1 "\t" $2 "\t" $12}' high_stringency.txt > high_stringency_MCL.txt
+
+
+
+
+5. MCL
+set format to tabular while uploading the document
+
+
+
+DRAWING HISTOGRAMS
+X axis = number of genes in clusters
+Y axis = number of such clusters
+
+a. command that makes a files in which 1st column is future Y axis and 2nd column is future X axis
+awk '{print NF}' MCL_low.tabular | sort | uniq -c | sort -k2,2n > cluster_statistics_low.txt
+awk '{print NF}' MCL_high.tabular | sort | uniq -c | sort -k2,2n > cluster_statistics_high.txt
+
+b. drawing histograms in GoogleSheets (do the same code for high stringency)
+data <- read.table("cluster_statistics_low.txt", header = FALSE)
+
+
+
+EXTRACTING TAGS
+1. from the folder MCL_low.tabular make a table that for gives each gene the cluster it belong to (same with MCL_high.tabular)
+awk '{for (i = 1; i <= NF; i++) print $i, NR}' MCL_low.tabular > low_gene_cluster.txt
+awk '{for (i = 1; i <= NF; i++) print $i, NR}' MCL_high.tabular > high_gene_cluster.txt
+
+
+
+2. add the cluster to the final_output.txt for both low and high stringency
+awk'NR==FNR{
+a. remove 'unknown' lines
+awk '$3 != "unknown" && $4 != "unknown" && $5 != "unknown" {print $0}' final_output.txt > final_final_output.txt
+b. add column for cluster and sort by chromosome and start position
+# Create a dictionary from low_gene_cluster.txt
+awk 'NR==FNR {dict[$1] = $2; next} $6 in dict {print $0 "\t" dict[$6]}' low_gene_cluster.txt final_final_output.txt | sort -k2,2 -k3,3 > final_output_with_values.txt
+
+awk 'NR==FNR {dict[$1] = $2; next} $6 in dict {print $0 "\t" dict[$6]}' high_gene_cluster.txt final_final_output.txt | sort -k2,2 -k3,3 > final_output_with_values_high.txt
+
+
+
+
+3. finding TAGs rule: spacer 0 or 1 
+
+awk '
+    NR > 1 {
+        if ($7 == prev_value) {
+            count++
+        } 
+	else if ($7 == prev_prev_value) {
+            count++
+        } 
+	else {
+            if (count > 1) {
+                print prev_value, count
+                total += count
+		
+            }
+	    count = 1
+        }
+	prev_prev_value = prev_value
+        prev_value = $7
+	
+    }
+    END {
+        if (count > 1) {
+            print prev_value, count
+            total += count
+        }
+        print "Total:", total
+    }
+' final_output_with_values_high.txt >> distribution_of_tags_high.txt
